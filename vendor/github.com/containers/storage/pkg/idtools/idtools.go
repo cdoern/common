@@ -146,11 +146,11 @@ type IDMappings struct {
 // using the data from /etc/sub{uid,gid} ranges, creates the
 // proper uid and gid remapping ranges for that user/group pair
 func NewIDMappings(username, groupname string) (*IDMappings, error) {
-	subuidRanges, err := readSubuid(username)
+	subuidRanges, err := parseSubuid(username)
 	if err != nil {
 		return nil, err
 	}
-	subgidRanges, err := readSubgid(groupname)
+	subgidRanges, err := parseSubgid(groupname)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +242,14 @@ func createIDMap(subidRanges ranges) []IDMap {
 		containerID = containerID + idrange.Length
 	}
 	return idMap
+}
+
+func parseSubuid(username string) (ranges, error) {
+	return parseSubidFile(subuidFileName, username)
+}
+
+func parseSubgid(username string) (ranges, error) {
+	return parseSubidFile(subgidFileName, username)
 }
 
 // parseSubidFile will read the appropriate file (/etc/subuid or /etc/subgid)

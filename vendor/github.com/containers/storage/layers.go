@@ -27,7 +27,6 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"github.com/vbatts/tar-split/archive/tar"
 	"github.com/vbatts/tar-split/tar/asm"
 	"github.com/vbatts/tar-split/tar/storage"
@@ -803,7 +802,7 @@ func (r *layerStore) Put(id string, parentLayer *Layer, names []string, mountLab
 				r.driver.Remove(id)
 				return nil, -1, err
 			}
-			size, err = r.applyDiffWithOptions(layer.ID, moreOptions, diff)
+			size, err = r.ApplyDiff(layer.ID, diff)
 			if err != nil {
 				if r.Delete(layer.ID) != nil {
 					// Either a driver error or an error saving.
@@ -1408,7 +1407,7 @@ func (r *layerStore) Diff(from, to string, options *DiffOptions) (io.ReadCloser,
 
 	if ad, ok := r.driver.(drivers.AdditionalLayerStoreDriver); ok {
 		if aLayer, err := ad.LookupAdditionalLayerByID(to); err == nil {
-			// This is an additional layer. We leverage blob API for acquiring the reproduced raw blob.
+			// This is an additional layer. We leverage blob API for aquiring the reproduced raw blob.
 			info, err := aLayer.Info()
 			if err != nil {
 				aLayer.Release()
@@ -1505,10 +1504,6 @@ func (r *layerStore) DiffSize(from, to string) (size int64, err error) {
 }
 
 func (r *layerStore) ApplyDiff(to string, diff io.Reader) (size int64, err error) {
-	return r.applyDiffWithOptions(to, nil, diff)
-}
-
-func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions, diff io.Reader) (size int64, err error) {
 	if !r.IsReadWrite() {
 		return -1, errors.Wrapf(ErrStoreIsReadOnly, "not allowed to modify layer contents at %q", r.layerspath())
 	}
@@ -1523,41 +1518,16 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 	if err != nil && err != io.EOF {
 		return -1, err
 	}
+
 	compression := archive.DetectCompression(header[:n])
-	defragmented := io.MultiReader(bytes.NewBuffer(header[:n]), diff)
-
-	// Decide if we need to compute digests
-	var compressedDigest, uncompressedDigest digest.Digest       // = ""
-	var compressedDigester, uncompressedDigester digest.Digester // = nil
-	if layerOptions != nil && layerOptions.OriginalDigest != "" &&
-		layerOptions.OriginalDigest.Algorithm() == digest.Canonical {
-		compressedDigest = layerOptions.OriginalDigest
-	} else {
-		compressedDigester = digest.Canonical.Digester()
-	}
-	if layerOptions != nil && layerOptions.UncompressedDigest != "" &&
-		layerOptions.UncompressedDigest.Algorithm() == digest.Canonical {
-		uncompressedDigest = layerOptions.UncompressedDigest
-	} else {
-		uncompressedDigester = digest.Canonical.Digester()
-	}
-
-	var compressedWriter io.Writer
-	if compressedDigester != nil {
-		compressedWriter = compressedDigester.Hash()
-	} else {
-		compressedWriter = ioutil.Discard
-	}
-	compressedCounter := ioutils.NewWriteCounter(compressedWriter)
-	defragmented = io.TeeReader(defragmented, compressedCounter)
+	compressedDigest := digest.Canonical.Digester()
+	compressedCounter := ioutils.NewWriteCounter(compressedDigest.Hash())
+	defragmented := io.TeeReader(io.MultiReader(bytes.NewBuffer(header[:n]), diff), compressedCounter)
 
 	tsdata := bytes.Buffer{}
 	compressor, err := pgzip.NewWriterLevel(&tsdata, pgzip.BestSpeed)
 	if err != nil {
 		compressor = pgzip.NewWriter(&tsdata)
-	}
-	if err := compressor.SetConcurrency(1024*1024, 1); err != nil { // 1024*1024 is the hard-coded default; we're not changing that
-		logrus.Infof("error setting compression concurrency threads to 1: %v; ignoring", err)
 	}
 	metadata := storage.NewJSONPacker(compressor)
 	uncompressed, err := archive.DecompressStream(defragmented)
@@ -1565,6 +1535,8 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 		return -1, err
 	}
 	defer uncompressed.Close()
+	uncompressedDigest := digest.Canonical.Digester()
+	uncompressedCounter := ioutils.NewWriteCounter(uncompressedDigest.Hash())
 	uidLog := make(map[uint32]struct{})
 	gidLog := make(map[uint32]struct{})
 	idLogger, err := tarlog.NewLogger(func(h *tar.Header) {
@@ -1577,12 +1549,7 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 		return -1, err
 	}
 	defer idLogger.Close()
-	uncompressedCounter := ioutils.NewWriteCounter(idLogger)
-	uncompressedWriter := (io.Writer)(uncompressedCounter)
-	if uncompressedDigester != nil {
-		uncompressedWriter = io.MultiWriter(uncompressedWriter, uncompressedDigester.Hash())
-	}
-	payload, err := asm.NewInputTarStream(io.TeeReader(uncompressed, uncompressedWriter), metadata, storage.NewDiscardFilePutter())
+	payload, err := asm.NewInputTarStream(io.TeeReader(uncompressed, io.MultiWriter(uncompressedCounter, idLogger)), metadata, storage.NewDiscardFilePutter())
 	if err != nil {
 		return -1, err
 	}
@@ -1604,12 +1571,6 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 			return -1, err
 		}
 	}
-	if compressedDigester != nil {
-		compressedDigest = compressedDigester.Digest()
-	}
-	if uncompressedDigester != nil {
-		uncompressedDigest = uncompressedDigester.Digest()
-	}
 
 	updateDigestMap := func(m *map[digest.Digest][]string, oldvalue, newvalue digest.Digest, id string) {
 		var newList []string
@@ -1629,11 +1590,11 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 			(*m)[newvalue] = append((*m)[newvalue], id)
 		}
 	}
-	updateDigestMap(&r.bycompressedsum, layer.CompressedDigest, compressedDigest, layer.ID)
-	layer.CompressedDigest = compressedDigest
+	updateDigestMap(&r.bycompressedsum, layer.CompressedDigest, compressedDigest.Digest(), layer.ID)
+	layer.CompressedDigest = compressedDigest.Digest()
 	layer.CompressedSize = compressedCounter.Count
-	updateDigestMap(&r.byuncompressedsum, layer.UncompressedDigest, uncompressedDigest, layer.ID)
-	layer.UncompressedDigest = uncompressedDigest
+	updateDigestMap(&r.byuncompressedsum, layer.UncompressedDigest, uncompressedDigest.Digest(), layer.ID)
+	layer.UncompressedDigest = uncompressedDigest.Digest()
 	layer.UncompressedSize = uncompressedCounter.Count
 	layer.CompressionType = compression
 	layer.UIDs = make([]uint32, 0, len(uidLog))

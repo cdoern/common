@@ -33,7 +33,7 @@ import (
 	units "github.com/docker/go-units"
 	"github.com/hashicorp/go-multierror"
 	digest "github.com/opencontainers/go-digest"
-	"github.com/opencontainers/runc/libcontainer/userns"
+	rsystem "github.com/opencontainers/runc/libcontainer/system"
 	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
@@ -266,8 +266,9 @@ func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) 
 	}
 
 	if opts.mountProgram != "" {
-		if err := ioutil.WriteFile(getMountProgramFlagFile(home), []byte("true"), 0600); err != nil {
-			return nil, err
+		f, err := os.Create(getMountProgramFlagFile(home))
+		if err == nil {
+			f.Close()
 		}
 	} else {
 		// check if they are running over btrfs, aufs, zfs, overlay, or ecryptfs
@@ -363,12 +364,12 @@ func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) 
 		// Try to enable project quota support over xfs.
 		if d.quotaCtl, err = quota.NewControl(home); err == nil {
 			projectQuotaSupported = true
-		} else if opts.quota.Size > 0 || opts.quota.Inodes > 0 {
-			return nil, fmt.Errorf("Storage options overlay.size and overlay.inodes not supported. Filesystem does not support Project Quota: %v", err)
+		} else if opts.quota.Size > 0 {
+			return nil, fmt.Errorf("Storage option overlay.size not supported. Filesystem does not support Project Quota: %v", err)
 		}
-	} else if opts.quota.Size > 0 || opts.quota.Inodes > 0 {
+	} else if opts.quota.Size > 0 {
 		// if xfs is not the backing fs then error out if the storage-opt overlay.size is used.
-		return nil, fmt.Errorf("Storage option overlay.size and overlay.inodes only supported for backingFS XFS. Found %v", backingFs)
+		return nil, fmt.Errorf("Storage option overlay.size only supported for backingFS XFS. Found %v", backingFs)
 	}
 
 	logrus.Debugf("backingFs=%s, projectQuotaSupported=%v, useNativeDiff=%v, usingMetacopy=%v", backingFs, projectQuotaSupported, !d.useNaiveDiff(), d.usingMetacopy)
@@ -399,13 +400,6 @@ func parseOptions(options []string) (*overlayOptions, error) {
 				return nil, err
 			}
 			o.quota.Size = uint64(size)
-		case "inodes":
-			logrus.Debugf("overlay: inodes=%s", val)
-			inodes, err := strconv.ParseUint(val, 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			o.quota.Inodes = uint64(inodes)
 		case "imagestore", "additionalimagestore":
 			logrus.Debugf("overlay: imagestore=%s", val)
 			// Additional read only image stores to use for lower paths
@@ -541,29 +535,9 @@ func SupportsNativeOverlay(graphroot, rundir string) (bool, error) {
 	home := filepath.Join(graphroot, "overlay")
 	runhome := filepath.Join(rundir, "overlay")
 
-	var contents string
-	flagContent, err := ioutil.ReadFile(getMountProgramFlagFile(home))
-	if err == nil {
-		contents = strings.TrimSpace(string(flagContent))
-	}
-	switch contents {
-	case "true":
+	if _, err := os.Stat(getMountProgramFlagFile(home)); err == nil {
 		logrus.Debugf("overlay storage already configured with a mount-program")
 		return false, nil
-	default:
-		needsMountProgram, err := scanForMountProgramIndicators(home)
-		if err != nil && !os.IsNotExist(err) {
-			return false, err
-		}
-		if err := ioutil.WriteFile(getMountProgramFlagFile(home), []byte(fmt.Sprintf("%t", needsMountProgram)), 0600); err != nil && !os.IsNotExist(err) {
-			return false, err
-		}
-		if needsMountProgram {
-			return false, nil
-		}
-		// fall through to check if we find ourselves needing to use a
-		// mount program now
-	case "false":
 	}
 
 	for _, dir := range []string{home, runhome} {
@@ -638,10 +612,6 @@ func supportsOverlay(home string, homeMagic graphdriver.FsMagic, rootUID, rootGI
 		}
 		if unshare.IsRootless() {
 			flags = fmt.Sprintf("%s,userxattr", flags)
-		}
-		if err := syscall.Mknod(filepath.Join(upperDir, "whiteout"), syscall.S_IFCHR|0600, int(unix.Mkdev(0, 0))); err != nil {
-			logrus.Debugf("unable to create kernel-style whiteout: %v", err)
-			return supportsDType, errors.Wrapf(err, "unable to create kernel-style whiteout")
 		}
 
 		if len(flags) < unix.Getpagesize() {
@@ -814,13 +784,6 @@ func (d *Driver) CreateReadWrite(id, parent string, opts *graphdriver.CreateOpts
 		opts.StorageOpt["size"] = strconv.FormatUint(d.options.quota.Size, 10)
 	}
 
-	if _, ok := opts.StorageOpt["inodes"]; !ok {
-		if opts.StorageOpt == nil {
-			opts.StorageOpt = map[string]string{}
-		}
-		opts.StorageOpt["inodes"] = strconv.FormatUint(d.options.quota.Inodes, 10)
-	}
-
 	return d.create(id, parent, opts)
 }
 
@@ -830,9 +793,6 @@ func (d *Driver) Create(id, parent string, opts *graphdriver.CreateOpts) (retErr
 	if opts != nil && len(opts.StorageOpt) != 0 {
 		if _, ok := opts.StorageOpt["size"]; ok {
 			return fmt.Errorf("--storage-opt size is only supported for ReadWrite Layers")
-		}
-		if _, ok := opts.StorageOpt["inodes"]; ok {
-			return fmt.Errorf("--storage-opt inodes is only supported for ReadWrite Layers")
 		}
 	}
 
@@ -890,9 +850,7 @@ func (d *Driver) create(id, parent string, opts *graphdriver.CreateOpts) (retErr
 			if driver.options.quota.Size > 0 {
 				quota.Size = driver.options.quota.Size
 			}
-			if driver.options.quota.Inodes > 0 {
-				quota.Inodes = driver.options.quota.Inodes
-			}
+
 		}
 		// Set container disk quota limit
 		// If it is set to 0, we will track the disk usage, but not enforce a limit
@@ -964,12 +922,6 @@ func (d *Driver) parseStorageOpt(storageOpt map[string]string, driver *Driver) e
 				return err
 			}
 			driver.options.quota.Size = uint64(size)
-		case "inodes":
-			inodes, err := strconv.ParseUint(val, 10, 64)
-			if err != nil {
-				return err
-			}
-			driver.options.quota.Inodes = uint64(inodes)
 		default:
 			return fmt.Errorf("Unknown option %s", key)
 		}
@@ -1638,7 +1590,7 @@ func (d *Driver) ApplyDiffWithDiffer(id, parent string, options *graphdriver.App
 		GIDMaps:           idMappings.GIDs(),
 		IgnoreChownErrors: d.options.ignoreChownErrors,
 		WhiteoutFormat:    d.getWhiteoutFormat(),
-		InUserNS:          userns.RunningInUserNS(),
+		InUserNS:          rsystem.RunningInUserNS(),
 	})
 	out.Target = applyDir
 	return out, err
@@ -1696,7 +1648,7 @@ func (d *Driver) ApplyDiff(id, parent string, options graphdriver.ApplyDiffOpts)
 		IgnoreChownErrors: d.options.ignoreChownErrors,
 		ForceMask:         d.options.forceMask,
 		WhiteoutFormat:    d.getWhiteoutFormat(),
-		InUserNS:          userns.RunningInUserNS(),
+		InUserNS:          rsystem.RunningInUserNS(),
 	}); err != nil {
 		return 0, err
 	}
@@ -1941,7 +1893,7 @@ func (al *additionalLayer) Info() (io.ReadCloser, error) {
 	return os.Open(filepath.Join(al.path, "info"))
 }
 
-// Blob returns a reader of the raw contents of this layer.
+// Blob returns a reader of the raw contents of this leyer.
 func (al *additionalLayer) Blob() (io.ReadCloser, error) {
 	return os.Open(filepath.Join(al.path, "blob"))
 }

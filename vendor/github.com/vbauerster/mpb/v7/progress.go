@@ -19,7 +19,7 @@ import (
 
 const (
 	// default RefreshRate
-	prr = 150 * time.Millisecond
+	prr = 120 * time.Millisecond
 )
 
 // Progress represents a container that renders one or more progress
@@ -157,25 +157,7 @@ func (p *Progress) dropBar(b *Bar) {
 	}
 }
 
-func (p *Progress) traverseBars(cb func(b *Bar) bool) {
-	done := make(chan struct{})
-	select {
-	case p.operateState <- func(s *pState) {
-		for i := 0; i < s.bHeap.Len(); i++ {
-			bar := s.bHeap[i]
-			if !cb(bar) {
-				break
-			}
-		}
-		close(done)
-	}:
-		<-done
-	case <-p.done:
-	}
-}
-
-// UpdateBarPriority same as *Bar.SetPriority(int).
-func (p *Progress) UpdateBarPriority(b *Bar, priority int) {
+func (p *Progress) setBarPriority(b *Bar, priority int) {
 	select {
 	case p.operateState <- func(s *pState) {
 		if b.index < 0 {
@@ -188,9 +170,14 @@ func (p *Progress) UpdateBarPriority(b *Bar, priority int) {
 	}
 }
 
+// UpdateBarPriority same as *Bar.SetPriority(int).
+func (p *Progress) UpdateBarPriority(b *Bar, priority int) {
+	p.setBarPriority(b, priority)
+}
+
 // BarCount returns bars count.
 func (p *Progress) BarCount() int {
-	result := make(chan int)
+	result := make(chan int, 1)
 	select {
 	case p.operateState <- func(s *pState) { result <- s.bHeap.Len() }:
 		return <-result
@@ -235,7 +222,7 @@ func (p *Progress) serve(s *pState, cw *cwriter.Writer) {
 				p.dlogger.Println(err)
 			}
 		case <-s.shutdownNotifier:
-			for s.heapUpdated {
+			if s.heapUpdated {
 				if err := s.render(cw); err != nil {
 					p.dlogger.Println(err)
 				}
@@ -304,12 +291,11 @@ func (s *pState) render(cw *cwriter.Writer) error {
 }
 
 func (s *pState) flush(cw *cwriter.Writer) error {
-	var totalLines int
-	bm := make(map[*Bar]int, s.bHeap.Len())
+	var lineCount int
+	bm := make(map[*Bar]struct{}, s.bHeap.Len())
 	for s.bHeap.Len() > 0 {
 		b := heap.Pop(&s.bHeap).(*Bar)
-		frame := <-b.frameCh
-		cw.ReadFrom(frame.reader)
+		cw.ReadFrom(<-b.frameCh)
 		if b.toShutdown {
 			if b.recoveredPanic != nil {
 				s.barShutdownQueue = append(s.barShutdownQueue, b)
@@ -322,8 +308,8 @@ func (s *pState) flush(cw *cwriter.Writer) error {
 				}()
 			}
 		}
-		bm[b] = frame.lines
-		totalLines += frame.lines
+		lineCount += b.extendedLines + 1
+		bm[b] = struct{}{}
 	}
 
 	for _, b := range s.barShutdownQueue {
@@ -334,7 +320,7 @@ func (s *pState) flush(cw *cwriter.Writer) error {
 			b.toDrop = true
 		}
 		if s.popCompleted && !b.noPop {
-			totalLines -= bm[b]
+			lineCount -= b.extendedLines + 1
 			b.toDrop = true
 		}
 		if b.toDrop {
@@ -349,7 +335,7 @@ func (s *pState) flush(cw *cwriter.Writer) error {
 		heap.Push(&s.bHeap, b)
 	}
 
-	return cw.Flush(totalLines)
+	return cw.Flush(lineCount)
 }
 
 func (s *pState) updateSyncMatrix() {

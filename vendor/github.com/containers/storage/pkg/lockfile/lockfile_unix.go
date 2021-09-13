@@ -5,7 +5,6 @@ package lockfile
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -34,30 +33,11 @@ type lockfile struct {
 // descriptor.  Note that the path is opened read-only when ro is set.  If ro
 // is unset, openLock will open the path read-write and create the file if
 // necessary.
-func openLock(path string, ro bool) (fd int, err error) {
+func openLock(path string, ro bool) (int, error) {
 	if ro {
-		fd, err = unix.Open(path, os.O_RDONLY|unix.O_CLOEXEC, 0)
-	} else {
-		fd, err = unix.Open(path,
-			os.O_RDWR|unix.O_CLOEXEC|os.O_CREATE,
-			unix.S_IRUSR|unix.S_IWUSR|unix.S_IRGRP|unix.S_IROTH,
-		)
+		return unix.Open(path, os.O_RDONLY|unix.O_CLOEXEC, 0)
 	}
-
-	if err == nil {
-		return
-	}
-
-	// the directory of the lockfile seems to be removed, try to create it
-	if os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return fd, errors.Wrap(err, "creating locker directory")
-		}
-
-		return openLock(path, ro)
-	}
-
-	return
+	return unix.Open(path, os.O_RDWR|unix.O_CLOEXEC|os.O_CREATE, unix.S_IRUSR|unix.S_IWUSR|unix.S_IRGRP|unix.S_IROTH)
 }
 
 // createLockerForPath returns a Locker object, possibly (depending on the platform)
