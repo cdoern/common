@@ -245,7 +245,7 @@ func defaultConfigFromMemory() (*EngineConfig, error) {
 	if path, ok := os.LookupEnv("CONTAINERS_STORAGE_CONF"); ok {
 		types.SetDefaultConfigFilePath(path)
 	}
-	storeOpts, err := types.DefaultStoreOptions(unshare.IsRootless(), unshare.GetRootlessUID())
+	storeOpts, err := types.DefaultStoreOptions(unshare.IsRootless(), unshare.GetRootlessUID(), "")
 	if err != nil {
 		return nil, err
 	}

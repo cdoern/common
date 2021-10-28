@@ -23,7 +23,7 @@ func DefaultStoreOptionsAutoDetectUID() (types.StoreOptions, error) {
 
 // DefaultStoreOptions returns the default storage ops for containers
 func DefaultStoreOptions(rootless bool, rootlessUID int) (types.StoreOptions, error) {
-	return types.DefaultStoreOptions(rootless, rootlessUID)
+	return types.DefaultStoreOptions(rootless, rootlessUID, "")
 }
 
 func validateMountOptions(mountOptions []string) error {

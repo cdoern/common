@@ -29,8 +29,9 @@ type tomlConfig struct {
 
 // defaultConfigFile path to the system wide storage.conf file
 var (
-	defaultConfigFile    = "/etc/containers/storage.conf"
-	defaultConfigFileSet = false
+	defaultConfigFile         = "/usr/share/containers/storage.conf"
+	defaultOverrideConfigFile = "/etc/containers/storage.conf"
+	defaultConfigFileSet      = false
 	// DefaultStoreOptions is a reasonable default set of options.
 	defaultStoreOptions StoreOptions
 )
@@ -40,7 +41,14 @@ func init() {
 	defaultStoreOptions.GraphRoot = "/var/lib/containers/storage"
 	defaultStoreOptions.GraphDriverName = ""
 
-	ReloadConfigurationFileIfNeeded(defaultConfigFile, &defaultStoreOptions)
+	if _, err := os.Stat(defaultOverrideConfigFile); err == nil {
+		ReloadConfigurationFileIfNeeded(defaultOverrideConfigFile, &defaultStoreOptions)
+	} else {
+		if !os.IsNotExist(err) {
+			logrus.Warningf("Attempting to use %s, %v", defaultConfigFile, err)
+		}
+		ReloadConfigurationFileIfNeeded(defaultConfigFile, &defaultStoreOptions)
+	}
 }
 
 // defaultStoreOptionsIsolated is an internal implementation detail of DefaultStoreOptions to allow testing.
@@ -109,10 +117,13 @@ func defaultStoreOptionsIsolated(rootless bool, rootlessUID int, storageConf str
 }
 
 // DefaultStoreOptions returns the default storage ops for containers
-func DefaultStoreOptions(rootless bool, rootlessUID int) (StoreOptions, error) {
-	storageConf, err := DefaultConfigFile(rootless && rootlessUID != 0)
-	if err != nil {
-		return defaultStoreOptions, err
+func DefaultStoreOptions(rootless bool, rootlessUID int, storageConf string) (StoreOptions, error) {
+	var err error
+	if len(storageConf) == 0 {
+		storageConf, err = DefaultConfigFile(rootless && rootlessUID != 0)
+		if err != nil {
+			return defaultStoreOptions, err
+		}
 	}
 	return defaultStoreOptionsIsolated(rootless, rootlessUID, storageConf)
 }
@@ -226,7 +237,7 @@ func getRootlessStorageOpts(rootlessUID int, systemOpts StoreOptions) (StoreOpti
 // DefaultStoreOptionsAutoDetectUID returns the default storage ops for containers
 func DefaultStoreOptionsAutoDetectUID() (StoreOptions, error) {
 	uid := getRootlessUID()
-	return DefaultStoreOptions(uid != 0, uid)
+	return DefaultStoreOptions(uid != 0, uid, "")
 }
 
 var prevReloadConfig = struct {
