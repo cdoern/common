@@ -1,5 +1,5 @@
-//go:build !linux
-// +build !linux
+//go:build linux
+// +build linux
 
 package cgroups
 
@@ -17,7 +17,8 @@ import (
 	"github.com/containers/storage/pkg/unshare"
 	systemdDbus "github.com/coreos/go-systemd/v22/dbus"
 	"github.com/godbus/dbus/v5"
-	spec "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -33,60 +34,11 @@ var (
 // CgroupControl controls a cgroup hierarchy
 type CgroupControl struct {
 	cgroup2 bool
-	path    string
+	config  *configs.Cgroup
 	systemd bool
 	// List of additional cgroup subsystems joined that
 	// do not have a custom handler.
 	additionalControllers []controller
-}
-
-// CPUUsage keeps stats for the CPU usage (unit: nanoseconds)
-type CPUUsage struct {
-	Kernel uint64
-	Total  uint64
-	PerCPU []uint64
-}
-
-// MemoryUsage keeps stats for the memory usage
-type MemoryUsage struct {
-	Usage uint64
-	Limit uint64
-}
-
-// CPUMetrics keeps stats for the CPU usage
-type CPUMetrics struct {
-	Usage CPUUsage
-}
-
-// BlkIOEntry describes an entry in the blkio stats
-type BlkIOEntry struct {
-	Op    string
-	Major uint64
-	Minor uint64
-	Value uint64
-}
-
-// BlkioMetrics keeps usage stats for the blkio cgroup controller
-type BlkioMetrics struct {
-	IoServiceBytesRecursive []BlkIOEntry
-}
-
-// MemoryMetrics keeps usage stats for the memory cgroup controller
-type MemoryMetrics struct {
-	Usage MemoryUsage
-}
-
-// PidsMetrics keeps usage stats for the pids cgroup controller
-type PidsMetrics struct {
-	Current uint64
-}
-
-// Metrics keeps usage stats for the cgroup controllers
-type Metrics struct {
-	CPU    CPUMetrics
-	Blkio  BlkioMetrics
-	Memory MemoryMetrics
-	Pids   PidsMetrics
 }
 
 type controller struct {
@@ -96,9 +48,9 @@ type controller struct {
 
 type controllerHandler interface {
 	Create(*CgroupControl) (bool, error)
-	Apply(*CgroupControl, *spec.LinuxResources) error
+	Apply(*CgroupControl, *configs.Resources) error
 	Destroy(*CgroupControl) error
-	Stat(*CgroupControl, *Metrics) error
+	Stat(*CgroupControl, *cgroups.Stats) error
 }
 
 const (
@@ -247,7 +199,7 @@ func getCgroupPathForCurrentProcess() (string, error) {
 
 // getCgroupv1Path is a helper function to get the cgroup v1 path
 func (c *CgroupControl) getCgroupv1Path(name string) string {
-	return filepath.Join(cgroupRoot, name, c.path)
+	return filepath.Join(cgroupRoot, name, c.config.Path)
 }
 
 // initialize initializes the specified hierarchy
@@ -257,14 +209,14 @@ func (c *CgroupControl) initialize() (err error) {
 		if err != nil {
 			for name, ctr := range createdSoFar {
 				if err := ctr.Destroy(c); err != nil {
-					logrus.Warningf("error cleaning up controller %s for %s", name, c.path)
+					logrus.Warningf("error cleaning up controller %s for %s", name, c.config.Path)
 				}
 			}
 		}
 	}()
 	if c.cgroup2 {
-		if err := createCgroupv2Path(filepath.Join(cgroupRoot, c.path)); err != nil {
-			return errors.Wrapf(err, "error creating cgroup path %s", c.path)
+		if err := createCgroupv2Path(filepath.Join(cgroupRoot, c.config.Path)); err != nil {
+			return errors.Wrapf(err, "error creating cgroup path %s", c.config.Path)
 		}
 	}
 	for name, handler := range handlers {
@@ -333,14 +285,17 @@ func readFileByKeyAsUint64(path, key string) (uint64, error) {
 }
 
 // New creates a new cgroup control
-func New(path string, resources *spec.LinuxResources) (*CgroupControl, error) {
+func New(path string, resources *configs.Resources) (*CgroupControl, error) {
 	cgroup2, err := IsCgroup2UnifiedMode()
 	if err != nil {
 		return nil, err
 	}
 	control := &CgroupControl{
 		cgroup2: cgroup2,
-		path:    path,
+		config: &configs.Cgroup{
+			Path:      path,
+			Resources: resources,
+		},
 	}
 
 	if !cgroup2 {
@@ -366,8 +321,10 @@ func NewSystemd(path string) (*CgroupControl, error) {
 	}
 	control := &CgroupControl{
 		cgroup2: cgroup2,
-		path:    path,
 		systemd: true,
+		config: &configs.Cgroup{
+			Path: path,
+		},
 	}
 	return control, nil
 }
@@ -380,8 +337,10 @@ func Load(path string) (*CgroupControl, error) {
 	}
 	control := &CgroupControl{
 		cgroup2: cgroup2,
-		path:    path,
 		systemd: false,
+		config: &configs.Cgroup{
+			Path: path,
+		},
 	}
 	if !cgroup2 {
 		controllers, err := getAvailableControllers(handlers, false)
@@ -473,7 +432,7 @@ func dbusAuthConnection(uid int, createBus func(opts ...dbus.ConnOption) (*dbus.
 
 // Delete cleans a cgroup
 func (c *CgroupControl) Delete() error {
-	return c.DeleteByPath(c.path)
+	return c.DeleteByPath(c.config.Path)
 }
 
 // DeleteByPathConn deletes the specified cgroup path using the specified
@@ -483,7 +442,7 @@ func (c *CgroupControl) DeleteByPathConn(path string, conn *systemdDbus.Conn) er
 		return systemdDestroyConn(path, conn)
 	}
 	if c.cgroup2 {
-		return rmDirRecursively(filepath.Join(cgroupRoot, c.path))
+		return rmDirRecursively(filepath.Join(cgroupRoot, c.config.Path))
 	}
 	var lastError error
 	for _, h := range handlers {
@@ -518,7 +477,7 @@ func (c *CgroupControl) DeleteByPath(path string) error {
 }
 
 // Update updates the cgroups
-func (c *CgroupControl) Update(resources *spec.LinuxResources) error {
+func (c *CgroupControl) Update(resources *configs.Resources) error {
 	for _, h := range handlers {
 		if err := h.Apply(c, resources); err != nil {
 			return err
@@ -532,7 +491,7 @@ func (c *CgroupControl) AddPid(pid int) error {
 	pidString := []byte(fmt.Sprintf("%d\n", pid))
 
 	if c.cgroup2 {
-		p := filepath.Join(cgroupRoot, c.path, "cgroup.procs")
+		p := filepath.Join(cgroupRoot, c.config.Path, "cgroup.procs")
 		if err := ioutil.WriteFile(p, pidString, 0644); err != nil {
 			return errors.Wrapf(err, "write %s", p)
 		}
@@ -564,8 +523,8 @@ func (c *CgroupControl) AddPid(pid int) error {
 }
 
 // Stat returns usage statistics for the cgroup
-func (c *CgroupControl) Stat() (*Metrics, error) {
-	m := Metrics{}
+func (c *CgroupControl) Stat() (*cgroups.Stats, error) {
+	m := cgroups.Stats{}
 	found := false
 	for _, h := range handlers {
 		if err := h.Stat(c, &m); err != nil {
@@ -609,7 +568,7 @@ func readCgroup2MapPath(path string) (map[string][]string, error) {
 }
 
 func readCgroup2MapFile(ctr *CgroupControl, name string) (map[string][]string, error) {
-	p := filepath.Join(cgroupRoot, ctr.path, name)
+	p := filepath.Join(cgroupRoot, ctr.config.Path, name)
 
 	return readCgroup2MapPath(p)
 }
