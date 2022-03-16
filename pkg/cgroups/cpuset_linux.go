@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
 type linuxCpusetHandler struct {
+	CpuSet fs.CpusetGroup
 }
 
 func getCpusetHandler() *linuxCpusetHandler {
@@ -35,17 +37,19 @@ func (c *linuxCpusetHandler) Apply(ctr *CgroupControl, res *configs.Resources) e
 	}
 	// maintaining the fs2 and fs1 functions here for future development
 	path := filepath.Join(cgroupRoot, CPUset, ctr.config.Path)
-	if res.CpusetCpus != "" {
-		if err := WriteFile(path, "cpuset.cpus", res.CpusetCpus); err != nil {
-			return err
+	/*
+		if res.CpusetCpus != "" {
+			if err := WriteFile(path, "cpuset.cpus", res.CpusetCpus); err != nil {
+				return err
+			}
 		}
-	}
-	if res.CpusetMems != "" {
-		if err := WriteFile(path, "cpuset.mems", res.CpusetMems); err != nil {
-			return err
+		if res.CpusetMems != "" {
+			if err := WriteFile(path, "cpuset.mems", res.CpusetMems); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil*/
+	return c.CpuSet.Set(path, res)
 }
 
 // Create the cgroup

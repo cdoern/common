@@ -8,10 +8,12 @@ import (
 	"strconv"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
 type linuxPidHandler struct {
+	Pid fs.PidsGroup
 }
 
 func getPidsHandler() *linuxPidHandler {
@@ -29,21 +31,25 @@ func (c *linuxPidHandler) Apply(ctr *CgroupControl, res *configs.Resources) erro
 		}
 		return nil
 	}
+
 	// maintaining the fs2 and fs1 functions here for future development
 	path := filepath.Join(cgroupRoot, Pids, ctr.config.Path)
-	if res.PidsLimit != 0 {
-		limit := "max"
+	/*
+		if res.PidsLimit != 0 {
+			limit := "max"
 
-		if res.PidsLimit > 0 {
-			limit = strconv.FormatInt(res.PidsLimit, 10)
+			if res.PidsLimit > 0 {
+				limit = strconv.FormatInt(res.PidsLimit, 10)
+			}
+
+			if err := WriteFile(path, "pids.max", limit); err != nil {
+				return err
+			}
 		}
 
-		if err := WriteFile(path, "pids.max", limit); err != nil {
-			return err
-		}
-	}
-
-	return nil
+		return nil
+	*/
+	return c.Pid.Set(path, res)
 }
 
 // Create the cgroup

@@ -12,11 +12,13 @@ import (
 	"strings"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/pkg/errors"
 )
 
 type linuxBlkioHandler struct {
+	Blkio fs.BlkioGroup
 }
 
 func getBlkioHandler() *linuxBlkioHandler {
@@ -38,7 +40,6 @@ func (c *linuxBlkioHandler) Apply(ctr *CgroupControl, res *configs.Resources) er
 				return err
 			}
 		}
-
 		if res.BlkioWeight != 0 {
 			if bfq != nil {
 				if _, err := bfq.WriteString(strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
@@ -87,34 +88,36 @@ func (c *linuxBlkioHandler) Apply(ctr *CgroupControl, res *configs.Resources) er
 	}
 	// maintaining the fs2 and fs1 functions here for future development
 	path := filepath.Join(cgroupRoot, Blkio, ctr.config.Path)
-	weightFile, weightDeviceFile := GetBlkioFiles(path)
-	if res.BlkioWeight != 0 {
-		if err := WriteFile(path, weightFile, strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
-			return err
-		}
-	}
-	if res.BlkioLeafWeight != 0 {
-		if err := WriteFile(path, "blkio.leaf_weight", strconv.FormatUint(uint64(res.BlkioLeafWeight), 10)); err != nil {
-			return err
-		}
-	}
-	for _, wd := range res.BlkioWeightDevice {
-		if wd.Weight != 0 {
-			if err := WriteFile(path, weightDeviceFile, fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.Weight)); err != nil {
+	/*
+		weightFile, weightDeviceFile := GetBlkioFiles(path)
+		if res.BlkioWeight != 0 {
+			if err := WriteFile(path, weightFile, strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
 				return err
 			}
 		}
-		if wd.LeafWeight != 0 {
-			if err := WriteFile(path, "blkio.leaf_weight_device", fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.LeafWeight)); err != nil {
+		if res.BlkioLeafWeight != 0 {
+			if err := WriteFile(path, "blkio.leaf_weight", strconv.FormatUint(uint64(res.BlkioLeafWeight), 10)); err != nil {
 				return err
 			}
 		}
-	}
-	err := SetBlkioThrottle(res, path)
-	if err != nil {
-		return err
-	}
-	return nil
+		for _, wd := range res.BlkioWeightDevice {
+			if wd.Weight != 0 {
+				if err := WriteFile(path, weightDeviceFile, fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.Weight)); err != nil {
+					return err
+				}
+			}
+			if wd.LeafWeight != 0 {
+				if err := WriteFile(path, "blkio.leaf_weight_device", fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.LeafWeight)); err != nil {
+					return err
+				}
+			}
+		}
+		err := SetBlkioThrottle(res, path)
+		if err != nil {
+			return err
+		}
+		return nil*/
+	return c.Blkio.Set(path, res)
 }
 
 // Create the cgroup
