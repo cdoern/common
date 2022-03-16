@@ -4,19 +4,19 @@
 package cgroups
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
-	"github.com/opencontainers/runc/libcontainer/cgroups/fscommon"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/pkg/errors"
-	"golang.org/x/sys/unix"
 )
 
 type linuxCpuHandler struct {
+	Cpu fs.CpuGroup
 }
 
 func getCPUHandler() *linuxCpuHandler {
@@ -26,82 +26,92 @@ func getCPUHandler() *linuxCpuHandler {
 // Apply set the specified constraints
 func (c *linuxCpuHandler) Apply(ctr *CgroupControl, res *configs.Resources) error {
 	if ctr.cgroup2 {
-		path := filepath.Join(cgroupRoot, ctr.config.Path)
-		if res.CpuWeight != 0 {
-			if err := WriteFile(path, "cpu.weight", strconv.FormatUint(res.CpuWeight, 10)); err != nil {
-				return err
-			}
-		}
-		if res.CpuQuota != 0 || res.CpuPeriod != 0 {
-			str := "max"
-			if res.CpuQuota > 0 {
-				str = strconv.FormatInt(res.CpuQuota, 10)
-			}
-			period := res.CpuPeriod
-			if period == 0 {
-				period = 100000 // sane default value from the kernel
-			}
-			str += " " + strconv.FormatUint(period, 10)
-			if err := WriteFile(path, "cpu.max", str); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	// maintaining the fs2 and fs1 functions here for future development
-	path := filepath.Join(cgroupRoot, CPU, ctr.config.Path)
-	if res.CpuShares != 0 {
-		shares := res.CpuShares
-		if err := WriteFile(path, "cpu.shares", strconv.FormatUint(shares, 10)); err != nil {
-			return err
-		}
-		// read it back
-		sharesRead, err := fscommon.GetCgroupParamUint(path, "cpu.shares")
+		ctr.config.Parent = cgroupRoot
+		man, err := fs2.NewManager(ctr.config, ctr.config.Path)
 		if err != nil {
 			return err
 		}
-		// ... and check
-		if shares > sharesRead {
-			return fmt.Errorf("the maximum allowed cpu-shares is %d", sharesRead)
-		} else if shares < sharesRead {
-			return fmt.Errorf("the minimum allowed cpu-shares is %d", sharesRead)
-		}
+		return man.Set(res)
+		/*
+			path := filepath.Join(cgroupRoot, ctr.config.Path)
+			if res.CpuWeight != 0 {
+				if err := WriteFile(path, "cpu.weight", strconv.FormatUint(res.CpuWeight, 10)); err != nil {
+					return err
+				}
+			}
+			if res.CpuQuota != 0 || res.CpuPeriod != 0 {
+				str := "max"
+				if res.CpuQuota > 0 {
+					str = strconv.FormatInt(res.CpuQuota, 10)
+				}
+				period := res.CpuPeriod
+				if period == 0 {
+					period = 100000 // sane default value from the kernel
+				}
+				str += " " + strconv.FormatUint(period, 10)
+				if err := WriteFile(path, "cpu.max", str); err != nil {
+					return err
+				}
+			}
+			return nil
+		*/
 	}
-
-	var period string
-	if res.CpuPeriod != 0 {
-		period = strconv.FormatUint(res.CpuPeriod, 10)
-		if err := WriteFile(path, "cpu.cfs_period_us", period); err != nil {
-			if !errors.Is(err, unix.EINVAL) || res.CpuQuota == 0 {
+	// maintaining the fs2 and fs1 functions here for future development
+	path := filepath.Join(cgroupRoot, CPU, ctr.config.Path)
+	/*
+		if res.CpuShares != 0 {
+			shares := res.CpuShares
+			if err := WriteFile(path, "cpu.shares", strconv.FormatUint(shares, 10)); err != nil {
 				return err
 			}
-		} else {
-			period = ""
+			// read it back
+			sharesRead, err := fscommon.GetCgroupParamUint(path, "cpu.shares")
+			if err != nil {
+				return err
+			}
+			// ... and check
+			if shares > sharesRead {
+				return fmt.Errorf("the maximum allowed cpu-shares is %d", sharesRead)
+			} else if shares < sharesRead {
+				return fmt.Errorf("the minimum allowed cpu-shares is %d", sharesRead)
+			}
 		}
-	}
-	if res.CpuQuota != 0 {
-		if err := WriteFile(path, "cpu.cfs_quota_us", strconv.FormatInt(res.CpuQuota, 10)); err != nil {
-			return err
-		}
-		if period != "" {
+
+		var period string
+		if res.CpuPeriod != 0 {
+			period = strconv.FormatUint(res.CpuPeriod, 10)
 			if err := WriteFile(path, "cpu.cfs_period_us", period); err != nil {
+				if !errors.Is(err, unix.EINVAL) || res.CpuQuota == 0 {
+					return err
+				}
+			} else {
+				period = ""
+			}
+		}
+		if res.CpuQuota != 0 {
+			if err := WriteFile(path, "cpu.cfs_quota_us", strconv.FormatInt(res.CpuQuota, 10)); err != nil {
+				return err
+			}
+			if period != "" {
+				if err := WriteFile(path, "cpu.cfs_period_us", period); err != nil {
+					return err
+				}
+			}
+		}
+
+		// rt setting
+		if res.CpuRtPeriod != 0 {
+			if err := WriteFile(path, "cpu.rt_period_us", strconv.FormatUint(res.CpuRtPeriod, 10)); err != nil {
 				return err
 			}
 		}
-	}
-
-	// rt setting
-	if res.CpuRtPeriod != 0 {
-		if err := WriteFile(path, "cpu.rt_period_us", strconv.FormatUint(res.CpuRtPeriod, 10)); err != nil {
-			return err
+		if res.CpuRtRuntime != 0 {
+			if err := WriteFile(path, "cpu.rt_runtime_us", strconv.FormatInt(res.CpuRtRuntime, 10)); err != nil {
+				return err
+			}
 		}
-	}
-	if res.CpuRtRuntime != 0 {
-		if err := WriteFile(path, "cpu.rt_runtime_us", strconv.FormatInt(res.CpuRtRuntime, 10)); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil*/
+	return c.Cpu.Set(path, res)
 }
 
 // Create the cgroup

@@ -7,10 +7,13 @@ import (
 	"path/filepath"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
 type linuxCpusetHandler struct {
+	CpuSet fs.CpusetGroup
 }
 
 func getCpusetHandler() *linuxCpusetHandler {
@@ -20,7 +23,30 @@ func getCpusetHandler() *linuxCpusetHandler {
 // Apply set the specified constraints
 func (c *linuxCpusetHandler) Apply(ctr *CgroupControl, res *configs.Resources) error {
 	if ctr.cgroup2 {
-		path := filepath.Join(cgroupRoot, ctr.config.Path)
+		ctr.config.Parent = cgroupRoot
+		man, err := fs2.NewManager(ctr.config, ctr.config.Path)
+		if err != nil {
+			return err
+		}
+		return man.Set(res)
+		/*
+			path := filepath.Join(cgroupRoot, ctr.config.Path)
+			if res.CpusetCpus != "" {
+				if err := WriteFile(path, "cpuset.cpus", res.CpusetCpus); err != nil {
+					return err
+				}
+			}
+			if res.CpusetMems != "" {
+				if err := WriteFile(path, "cpuset.mems", res.CpusetMems); err != nil {
+					return err
+				}
+			}
+			return nil
+		*/
+	}
+	// maintaining the fs2 and fs1 functions here for future development
+	path := filepath.Join(cgroupRoot, CPUset, ctr.config.Path)
+	/*
 		if res.CpusetCpus != "" {
 			if err := WriteFile(path, "cpuset.cpus", res.CpusetCpus); err != nil {
 				return err
@@ -31,21 +57,8 @@ func (c *linuxCpusetHandler) Apply(ctr *CgroupControl, res *configs.Resources) e
 				return err
 			}
 		}
-		return nil
-	}
-	// maintaining the fs2 and fs1 functions here for future development
-	path := filepath.Join(cgroupRoot, CPUset, ctr.config.Path)
-	if res.CpusetCpus != "" {
-		if err := WriteFile(path, "cpuset.cpus", res.CpusetCpus); err != nil {
-			return err
-		}
-	}
-	if res.CpusetMems != "" {
-		if err := WriteFile(path, "cpuset.mems", res.CpusetMems); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil*/
+	return c.CpuSet.Set(path, res)
 }
 
 // Create the cgroup

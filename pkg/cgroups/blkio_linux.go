@@ -5,18 +5,20 @@ package cgroups
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/pkg/errors"
 )
 
 type linuxBlkioHandler struct {
+	Blkio fs.BlkioGroup
 }
 
 func getBlkioHandler() *linuxBlkioHandler {
@@ -26,95 +28,104 @@ func getBlkioHandler() *linuxBlkioHandler {
 // Apply set the specified constraints
 func (c *linuxBlkioHandler) Apply(ctr *CgroupControl, res *configs.Resources) error {
 	if ctr.cgroup2 {
-		path := filepath.Join(cgroupRoot, ctr.config.Path)
-		var bfq *os.File
-		// This has to do with checking for the bfq handler
-		if res.BlkioWeight != 0 || len(res.BlkioWeightDevice) > 0 {
-			var err error
-			bfq, err = OpenFile(path, "io.bfq.weight", os.O_RDWR)
-			if err == nil {
-				defer bfq.Close()
-			} else if !os.IsNotExist(err) {
-				return err
-			}
+		ctr.config.Parent = cgroupRoot
+		man, err := fs2.NewManager(ctr.config, ctr.config.Path)
+		if err != nil {
+			return err
 		}
-
-		if res.BlkioWeight != 0 {
-			if bfq != nil {
-				if _, err := bfq.WriteString(strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
+		return man.Set(res)
+		/*
+			path := filepath.Join(cgroupRoot, ctr.config.Path)
+			var bfq *os.File
+			// This has to do with checking for the bfq handler
+			if res.BlkioWeight != 0 || len(res.BlkioWeightDevice) > 0 {
+				var err error
+				bfq, err = OpenFile(path, "io.bfq.weight", os.O_RDWR)
+				if err == nil {
+					defer bfq.Close()
+				} else if !os.IsNotExist(err) {
 					return err
 				}
-			} else {
-				var v uint64
-				if res.BlkioWeight != 0 {
-					v = 1 + (uint64(res.BlkioWeight)-10)*9999/990
+			}
+			if res.BlkioWeight != 0 {
+				if bfq != nil {
+					if _, err := bfq.WriteString(strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
+						return err
+					}
 				} else {
-					v = 0
+					var v uint64
+					if res.BlkioWeight != 0 {
+						v = 1 + (uint64(res.BlkioWeight)-10)*9999/990
+					} else {
+						v = 0
+					}
+					if err := WriteFile(path, "io.weight", strconv.FormatUint(v, 10)); err != nil {
+						return err
+					}
 				}
-				if err := WriteFile(path, "io.weight", strconv.FormatUint(v, 10)); err != nil {
+			}
+			if bfqDeviceWeightSupported(bfq) {
+				for _, wd := range res.BlkioWeightDevice {
+					if _, err := bfq.WriteString(wd.WeightString() + "\n"); err != nil {
+						return fmt.Errorf("setting device weight %q: %w", wd.WeightString(), err)
+					}
+				}
+			}
+			for _, td := range res.BlkioThrottleReadBpsDevice {
+				if err := WriteFile(path, "io.max", td.StringName("rbps")); err != nil {
 					return err
 				}
 			}
-		}
-		if bfqDeviceWeightSupported(bfq) {
-			for _, wd := range res.BlkioWeightDevice {
-				if _, err := bfq.WriteString(wd.WeightString() + "\n"); err != nil {
-					return fmt.Errorf("setting device weight %q: %w", wd.WeightString(), err)
+			for _, td := range res.BlkioThrottleWriteBpsDevice {
+				if err := WriteFile(path, "io.max", td.StringName("wbps")); err != nil {
+					return err
 				}
 			}
-		}
-		for _, td := range res.BlkioThrottleReadBpsDevice {
-			if err := WriteFile(path, "io.max", td.StringName("rbps")); err != nil {
-				return err
+			for _, td := range res.BlkioThrottleReadIOPSDevice {
+				if err := WriteFile(path, "io.max", td.StringName("riops")); err != nil {
+					return err
+				}
 			}
-		}
-		for _, td := range res.BlkioThrottleWriteBpsDevice {
-			if err := WriteFile(path, "io.max", td.StringName("wbps")); err != nil {
-				return err
+			for _, td := range res.BlkioThrottleWriteIOPSDevice {
+				if err := WriteFile(path, "io.max", td.StringName("wiops")); err != nil {
+					return err
+				}
 			}
-		}
-		for _, td := range res.BlkioThrottleReadIOPSDevice {
-			if err := WriteFile(path, "io.max", td.StringName("riops")); err != nil {
-				return err
-			}
-		}
-		for _, td := range res.BlkioThrottleWriteIOPSDevice {
-			if err := WriteFile(path, "io.max", td.StringName("wiops")); err != nil {
-				return err
-			}
-		}
-		return nil
+			return nil
+		*/
 	}
 	// maintaining the fs2 and fs1 functions here for future development
 	path := filepath.Join(cgroupRoot, Blkio, ctr.config.Path)
-	weightFile, weightDeviceFile := GetBlkioFiles(path)
-	if res.BlkioWeight != 0 {
-		if err := WriteFile(path, weightFile, strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
-			return err
-		}
-	}
-	if res.BlkioLeafWeight != 0 {
-		if err := WriteFile(path, "blkio.leaf_weight", strconv.FormatUint(uint64(res.BlkioLeafWeight), 10)); err != nil {
-			return err
-		}
-	}
-	for _, wd := range res.BlkioWeightDevice {
-		if wd.Weight != 0 {
-			if err := WriteFile(path, weightDeviceFile, fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.Weight)); err != nil {
+	/*
+		weightFile, weightDeviceFile := GetBlkioFiles(path)
+		if res.BlkioWeight != 0 {
+			if err := WriteFile(path, weightFile, strconv.FormatUint(uint64(res.BlkioWeight), 10)); err != nil {
 				return err
 			}
 		}
-		if wd.LeafWeight != 0 {
-			if err := WriteFile(path, "blkio.leaf_weight_device", fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.LeafWeight)); err != nil {
+		if res.BlkioLeafWeight != 0 {
+			if err := WriteFile(path, "blkio.leaf_weight", strconv.FormatUint(uint64(res.BlkioLeafWeight), 10)); err != nil {
 				return err
 			}
 		}
-	}
-	err := SetBlkioThrottle(res, path)
-	if err != nil {
-		return err
-	}
-	return nil
+		for _, wd := range res.BlkioWeightDevice {
+			if wd.Weight != 0 {
+				if err := WriteFile(path, weightDeviceFile, fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.Weight)); err != nil {
+					return err
+				}
+			}
+			if wd.LeafWeight != 0 {
+				if err := WriteFile(path, "blkio.leaf_weight_device", fmt.Sprintf("%d:%d %d", wd.Major, wd.Minor, wd.LeafWeight)); err != nil {
+					return err
+				}
+			}
+		}
+		err := SetBlkioThrottle(res, path)
+		if err != nil {
+			return err
+		}
+		return nil*/
+	return c.Blkio.Set(path, res)
 }
 
 // Create the cgroup

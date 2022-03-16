@@ -137,13 +137,6 @@ type Resources struct {
 	// Unified is cgroupv2-only key-value map.
 	Unified map[string]string `json:"unified"`
 
-	// SkipDevices allows to skip configuring device permissions.
-	// Used by e.g. kubelet while creating a parent cgroup (kubepods)
-	// common for many containers, and by runc update.
-	//
-	// NOTE it is impossible to start a container which has this flag set.
-	SkipDevices bool `json:"-"`
-
 	// SkipFreezeOnSet is a flag for cgroup manager to skip the cgroup
 	// freeze when setting resources. Only applicable to systemd legacy
 	// (i.e. cgroup v1) manager (which uses freeze by default to avoid

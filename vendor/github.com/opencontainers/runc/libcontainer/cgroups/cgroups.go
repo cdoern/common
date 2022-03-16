@@ -1,8 +1,12 @@
 package cgroups
 
 import (
+	"errors"
+
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
+
+var ErrNoDevRules = errors.New("cgroup manager is not configured to set device rules")
 
 type Manager interface {
 	// Apply creates a cgroup, if not yet created, and adds a process
@@ -56,4 +60,14 @@ type Manager interface {
 
 	// OOMKillCount reports OOM kill count for the cgroup.
 	OOMKillCount() (uint64, error)
+
+	// SetupDevFn is a method to set up device setting function.
+	// Until such function is set up, the instance of cgroup manager
+	// only creates devices cgroup, and if any device rules are specified
+	// to Set, it returns the ErrNoDevRules error.
+	//
+	// If a user needs a cgroup manager to manage device rules,
+	// it should call devices.Enable(manager) after creating
+	// the new manager.
+	SetupDevFn(fn func(path string, r *configs.Resources) error)
 }

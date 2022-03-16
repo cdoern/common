@@ -18,6 +18,7 @@ import (
 	systemdDbus "github.com/coreos/go-systemd/v22/dbus"
 	"github.com/godbus/dbus/v5"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -491,11 +492,8 @@ func (c *CgroupControl) AddPid(pid int) error {
 	pidString := []byte(fmt.Sprintf("%d\n", pid))
 
 	if c.cgroup2 {
-		p := filepath.Join(cgroupRoot, c.config.Path, "cgroup.procs")
-		if err := ioutil.WriteFile(p, pidString, 0644); err != nil {
-			return errors.Wrapf(err, "write %s", p)
-		}
-		return nil
+		path := filepath.Join(cgroupRoot, c.config.Path)
+		return fs2.CreateCgroupPath(path, c.config)
 	}
 
 	names := make([]string, 0, len(handlers))

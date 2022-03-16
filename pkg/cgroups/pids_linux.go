@@ -5,13 +5,15 @@ package cgroups
 
 import (
 	"path/filepath"
-	"strconv"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs"
+	"github.com/opencontainers/runc/libcontainer/cgroups/fs2"
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
 type linuxPidHandler struct {
+	Pid fs.PidsGroup
 }
 
 func getPidsHandler() *linuxPidHandler {
@@ -21,29 +23,40 @@ func getPidsHandler() *linuxPidHandler {
 // Apply set the specified constraints
 func (c *linuxPidHandler) Apply(ctr *CgroupControl, res *configs.Resources) error {
 	if ctr.cgroup2 {
-		path := filepath.Join(cgroupRoot, ctr.config.Path)
-		if val := strconv.FormatInt(res.PidsLimit, 10); val != "" {
-			if err := WriteFile(path, "pids.max", val); err != nil {
+		ctr.config.Parent = cgroupRoot
+		man, err := fs2.NewManager(ctr.config, ctr.config.Path)
+		if err != nil {
+			return err
+		}
+		return man.Set(res)
+		/*
+			path := filepath.Join(cgroupRoot, ctr.config.Path)
+				if val := strconv.FormatInt(res.PidsLimit, 10); val != "" {
+					if err := WriteFile(path, "pids.max", val); err != nil {
+						return err
+					}
+				}
+				return nil*/
+	}
+
+	// maintaining the fs2 and fs1 functions here for future development
+	path := filepath.Join(cgroupRoot, Pids, ctr.config.Path)
+	/*
+		if res.PidsLimit != 0 {
+			limit := "max"
+
+			if res.PidsLimit > 0 {
+				limit = strconv.FormatInt(res.PidsLimit, 10)
+			}
+
+			if err := WriteFile(path, "pids.max", limit); err != nil {
 				return err
 			}
 		}
+
 		return nil
-	}
-	// maintaining the fs2 and fs1 functions here for future development
-	path := filepath.Join(cgroupRoot, Pids, ctr.config.Path)
-	if res.PidsLimit != 0 {
-		limit := "max"
-
-		if res.PidsLimit > 0 {
-			limit = strconv.FormatInt(res.PidsLimit, 10)
-		}
-
-		if err := WriteFile(path, "pids.max", limit); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	*/
+	return c.Pid.Set(path, res)
 }
 
 // Create the cgroup
